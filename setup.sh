@@ -1,51 +1,80 @@
 #!/bin/bash
-# Check if gcloud is installed
-if ! command -v gcloud &> /dev/null; then
-    echo "gcloud could not be found. Installing..."
-    # Download the Google Cloud SDK install script
-    curl https://sdk.cloud.google.com > install.sh
-    # Make the install script executable
-    chmod +x install.sh
-    # Run the install script
-    ./install.sh --disable-prompts
-    # Add gcloud to the PATH
-    source '/root/Day1/google-cloud-sdk/path.bash.inc'
-    # Remove the install script
-    rm install.sh
-    echo "gcloud installed successfully."
-else
-    echo "gcloud is already installed."
+
+# Install gcloud
+if ! command -v gcloud &> /dev/null
+then
+    echo "gcloud could not be found, installing..."
+    export CLOUD_SDK_REPO="cloud-sdk-$(lsb_release -c -s)"
+    echo "deb http://packages.cloud.google.com/apt $CLOUD_SDK_REPO main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+    sudo apt-get update && sudo apt-get install google-cloud-sdk
 fi
 
-# Check if kubectl is installed
-if ! command -v kubectl &> /dev/null; then
-    echo "kubectl could not be found. Installing..."
-    # Download kubectl
-    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-    # Make it executable
-    chmod +x ./kubectl
-    # Move it to your local bin
-    sudo mv ./kubectl /usr/local/bin/kubectl
-    echo "kubectl installed successfully."
-else
-    echo "kubectl is already installed."
+# Authenticate gcloud
+echo "Authenticating gcloud with service account..."
+gcloud auth activate-service-account --key-file=[/root/K8/K8/k8project-415716-fd07b3cef25d.json]
+
+# Set gcloud project
+gcloud config set project [k8project-415716]
+
+# Install kubectl
+if ! command -v kubectl &> /dev/null
+then
+    echo "kubectl could not be found, installing..."
+    sudo apt-get update && sudo apt-get install -y apt-transport-https gnupg2
+    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee -a /etc/apt/sources.list.d/kubernetes.list
+    sudo apt-get update
+    sudo apt-get install -y kubectl
 fi
 
-# Authenticate to your GCP account
-gcloud auth login
+# Install helm
+if ! command -v helm &> /dev/null
+then
+    echo "helm could not be found, installing..."
+    curl https://baltocdn.com/helm/signing.asc | sudo apt-key add -
+    sudo apt-get install apt-transport-https --yes
+    echo "deb https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+    sudo apt-get update
+    sudo apt-get install helm
+fi
 
-# Set the project ID to the one where your GKE cluster resides
-gcloud config set project k8project-415716
+# Add the Kubernetes dashboard repository
+helm repo add kubernetes-dashboard https://kubernetes.github.io/dashboard/
 
-# Get authentication credentials for the cluster
-gcloud container clusters get-credentials my-gke-cluster --zone us-east1-c
+# Update your Helm repositories
+helm repo update
 
-# Create a service account for the dashboard
-kubectl create serviceaccount dashboard-admin-sa
+# Install the Kubernetes dashboard Helm chart
+helm install my-dashboard kubernetes-dashboard/kubernetes-dashboard --namespace kube-system --set service.type=NodePort
 
-# Bind the dashboard-admin-sa service account to the cluster-admin role
-kubectl create clusterrolebinding dashboard-admin-sa --clusterrole=cluster-admin --serviceaccount=default:dashboard-admin-sa
+# Create a Service Account and Cluster Role Binding
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-user
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-user
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: admin-user
+  namespace: kube-system
+EOF
 
-# Get the token and print it
-secret=$(kubectl get serviceaccount dashboard-admin-sa -o jsonpath="{.secrets[0].name}")
-kubectl get secret $secret -o jsonpath="{.data.token}" | base64 --decode
+# Get token
+echo "Dashboard Token:"
+kubectl -n kube-system describe secret $(kubectl -n kube-system get secret | grep admin-user | awk '{print $1}')
+
+# Get IP
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
+NODE_PORT=$(kubectl get -o jsonpath="{.spec.ports[0].nodePort}" services my-dashboard -n kube-system)
+echo "Dashboard URL: http://$NODE_IP:$NODE_PORT"

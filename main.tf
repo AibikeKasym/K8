@@ -77,7 +77,12 @@ resource "google_container_cluster" "primary" {
     google_project_service.cloudresourcemanager_api,
     google_project_service.kubernetes_engine_api
   ]
+
+  provisioner "local-exec" {
+    command = "gcloud container clusters get-credentials ${self.name} --region ${self.location}"
+  }
 }
+
 
 resource "google_container_node_pool" "primary_preemptible_nodes" {
   name       = "my-node-pool"
@@ -110,16 +115,10 @@ output "cluster_endpoint" {
   value       = google_container_cluster.primary.endpoint
 }
 
-resource "null_resource" "execute_setup" {
-  provisioner "local-exec" {
-    command = "chmod +x setup.sh && ./setup.sh"
-  }
-  depends_on = [google_container_cluster.primary]
-}
+resource "null_resource" "execute_script" {
+  depends_on = [google_container_node_pool.primary_preemptible_nodes]
 
-resource "null_resource" "deploy_dashboard" {
   provisioner "local-exec" {
-    command = "kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0/aio/deploy/recommended.yaml"
+    command = "/root/K8/K8/setup.sh"
   }
-  depends_on = [null_resource.execute_setup]
 }
